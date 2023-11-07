@@ -1,0 +1,475 @@
+
+---
+title: "PTG_2MEstrusDiestrus_Integrated_snRNAseq - Full pipeline"
+output:
+  html_notebook: default
+  output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    toc_depth: 3
+    theme: paper
+    code_folding: show
+    df_print: paged
+---
+
+## Load required libraries 
+```{r}
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+library(stringr)
+library(RColorBrewer)
+library(viridis)
+```
+
+
+## Load Seurat objects
+```{r}
+#MAKE SURE TO CHANGE THE PATH BELOW TO RFELECT THE FILE LOCATION ON YOUR SYSTEM
+Edir <- 'PATH/TO/Estrus/outs/filtered_feature_bc_matrix'
+Ddir <- 'PATH/TO/Diestrus/outs/filtered_feature_bc_matrix'
+estrus.data <- Read10X(data.dir = Edir)
+PTG_2M_Estrus <- CreateSeuratObject(counts = estrus.data, project = "PTG_2M_Estrus", min.cells = 3, min.features = 200)
+
+diestrus.data <- Read10X(data.dir = Ddir)
+PTG_2M_Diestrus <- CreateSeuratObject(counts = diestrus.data, project = "PTG_2M_Diestrus", min.cells = 3, min.features = 200)
+```
+
+
+## Merge Estrus and Diestrus datasets
+```{r}
+PTG_2M.combined <- merge(PTG_2M_Estrus, y = PTG_2M_Diestrus, add.cell.ids = c("Estrus", "Diestrus"), project = "PTG_2M_Combined")
+PTG_2M.combined
+```
+
+# Visualize QC metrics
+
+```{r FetalRO_QCsct, dev = c("png", "tiff"), fig.height = 6, fig.width = 10,}
+col <- c("#d11382", "#F4D03F")
+```
+
+```{r FetalRO_QCvln, dev = c("png", "tiff"), fig.height = 6, fig.width = 8,}
+PTG_2M.combined[["percent.mt"]] <- PercentageFeatureSet(PTG_2M.combined, pattern = "^mt-")
+PTG_2M.combined_QCsct <- FeatureScatter(PTG_2M.combined, feature1 = "nFeature_RNA", feature2 = "percent.mt", cols = col)
+PTG_2M.combined_QCsct
+```
+```{r}
+Adult_RO_QCvln <- VlnPlot(PTG_2M.combined, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0.1, cols = col)
+Adult_RO_QCvln
+```
+
+
+```{r}
+head(colnames(PTG_2M.combined))
+```
+
+```{r}
+table(PTG_2M.combined$orig.ident)
+```
+
+# split the dataset into a list of two seurat objects (stim and CTRL)
+```{r}
+PTG_2M.list <- SplitObject(PTG_2M.combined, split.by = "orig.ident")
+```
+
+# Normalize and identify variable features for each dataset independently
+```{r}
+PTG_2M.list <- lapply(X = PTG_2M.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+```
+
+# Select features that are repeatedly variable across datasets for integration
+```{r}
+features <- SelectIntegrationFeatures(object.list = PTG_2M.list)
+```
+
+## Perform Integration
+
+```{r}
+PTG.anchors <- FindIntegrationAnchors(object.list = PTG_2M.list, anchor.features = features)
+```
+```{r}
+PTG_2M.integrated <- IntegrateData(anchorset = PTG.anchors)
+```
+
+## Perform Integrated Analysis
+# specify that we will perform downstream analysis on the corrected data note that the original unmodified data still resides in the 'RNA' assay
+```{r}
+DefaultAssay(PTG_2M.integrated) <- "integrated"
+
+```
+
+# Run standard Seurat analysis workflow
+```{r}
+PTG_2M.integrated <- ScaleData(PTG_2M.integrated, verbose = FALSE)
+PTG_2M.integrated <- RunPCA(PTG_2M.integrated, npcs = 30, verbose = FALSE)
+PTG_2M.integrated <- RunUMAP(PTG_2M.integrated, reduction = "pca", dims = 1:30)
+PTG_2M.integrated <- FindNeighbors(PTG_2M.integrated, reduction = "pca", dims = 1:30)
+PTG_2M.integrated <- FindClusters(PTG_2M.integrated, resolution = 0.5)
+```
+
+# Visualize integrated data
+## Clusters
+```{r fig.height = 10, fig.width = 15, fig.align = "center"}
+DimPlot(PTG_2M.integrated, reduction = "umap", label = TRUE, repel = TRUE)
+```
+
+## By condition (estrous stage)
+```{r fig.height = 10, fig.width = 15, fig.align = "center"}
+DimPlot(PTG_2M.integrated, reduction = "umap", split.by = "orig.ident")
+```
+## Save Seurat object
+```{r}
+
+saveRDS(PTG_2M.integrated, file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_20230726.rds")
+```
+
+## [START HERE IF ANALYSIS IS ALREADY DONE AND YOU'RE JUST EXPLORING THE DATASET]
+## Load Seurat object
+```{r}
+PTG_2M.integrated <- readRDS(file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_20230726.rds")
+```
+
+## Generate FeaturePlot + ViolinPlot layouts for individual genes
+*<span style="color: green;">Enter the name of the gene you'd like to visualize below </span>*
+```{r PTGE16_PxPos, fig.height = 8, fig.width = 9, fig.align = "center"}
+gene <- "Mfap5"
+
+F1 <- FeaturePlot(PTG_2M.integrated, features = c(gene), reduction = 'umap', pt.size = 3, cols = c("grey", "red"), label.size = 5, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+V1 <- VlnPlot(PTG_2M.integrated, features = c(gene), assay = "RNA", split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+P_RO <- F1 + V1
+P_RO
+```
+
+## Explore expression of various genes to start identifying the cell types fro each cluster
+```{r fig.height =15, fig.width = 25, fig.align = "center"}
+VlnPlot(PTG_2M.integrated, features = c("Pax8", "Nr5a2", "Lgr5", "Gfra1", "Runx1", "Fshr", "Pgr", "Amh", "Pax2", "Rmst", "Foxj1", "Arl13b", "Cyp17a1", "Emcn", "Adgre1", "Cdh1"), assay = "RNA", split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+```
+```{r fig.height =15, fig.width = 25, fig.align = "center"}
+VlnPlot(PTG_2M.integrated, features = c("Pax8", "Nr5a2", "Lgr5", "Gfra1", "Runx1", "Fshr", "Pgr", "Amh", "Pax2", "Rmst", "Foxj1", "Arl13b", "Cyp17a1", "Emcn", "Adgre1", "Cnn1"), assay = "RNA")
+```
+
+## Export csv of top enriched genes for each cluster
+```{r}
+PTG_2M.integrated.markers <- FindAllMarkers(PTG_2M.integrated, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+```
+
+```{r}
+write.csv(PTG_2M.integrated.markers, "/Users/Jen/Desktop/PTG_2M.integrated_20230726.csv")
+```
+
+# Cell Type identification
+## Use Results from FindAllMarkers
+  - Use your knowledge of the field and litterature to identify clusters.  
+    - Epithelial markers: Krt8; Cdh1
+    - Epithelial progenitor marker: Lgr5
+    - Ciliated epthelium marker: Foxj1
+    - Rete ovarii markers: Pax8, Pax2, Gfra1, Rmst
+    - Granulosa cell markers: Foxl2, Esr2
+    - Growing granulosa markers: Amh, Nr5a2, Mki67
+    - Theca markers: Nr5a1, Cyp17a1
+    - Immune cell markers: Adgre; Ptprc
+    - Endothelial cell markers: Pecam1, Emcn
+    - Adipose marker: Adipoq
+    - Fibroblast / Myofribroblast markers: Pdgfrb, Acta2, Col1a1
+    - SMC markers: Tagln, Cnn1
+  - Use EnrichR or other similar pathway databases to find more precise cell types by copy/pasting the top enriched genes for each cluster into the search bar on http://www.EnrichR.com.
+  - Some clusters might nor return any interesting results -a clue that they might be low qaulity cells. An example here is Cluster #6.
+
+## Evaluate QC on clustered cells
+```{r AdultRO_QCvlnCluster, dev = c("png", "tiff"), fig.height = 8, fig.width = 15,}
+VlnPlot(PTG_2M.integrated, features = c("nFeature_RNA"), ncol = 2, pt.size = 0.2)
+```
+Cluster #6 is in fact poor quality, as demonstrated by the low number of features. One possibility is to remove it from the dataset, but this will disrupt the cluster order (would go from 5 to 7). It's also possible to remove cells from Cluster #6 and perform the whole analysis again. I chose to leave them and just ignore it for now.
+
+## Rename clusters based on marker expression and save new RDS object.
+```{r}
+PTG_2M.integrated_ID <- RenameIdents(object = PTG_2M.integrated, "0" = "LGR5+", "1" = "MyoFibroB", "2" = "Theca", "3" = "Granulosa", "4" = "Secretory RO1", "5" = "Growing Granulosa-Late", "6" = "LowQual", "7" = "Endothelial1", "8" = "Immune", "9" = "CR", "10" = "Endothelial2", "11" = "RO-TBD", "12" = "FibroB1", "13" = "SMCs", "14" = "FibroB2", "15" = "Growing Granulosa-Early", "16" = "Secretory RO2", "17" = "Adipose",  "18" = "Ciliated RO") 
+saveRDS(PTG_2M.integrated_ID, file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_20230917ID.rds")
+
+```
+
+
+#[START HERE IF YOU"VE ALREADY PERFORMED THE ANALYSIS AND JUST WANT TO EXPLORE THE DATA]
+## Load Seurat object
+```{r}
+PTG_2M.integrated_ID <- readRDS(file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_20230917ID.rds")
+```
+
+## Plot new UMAPS with cluster IDs
+```{r fig.height =8, fig.width = 10, fig.align = "center"}
+P1 <- DimPlot(PTG_2M.integrated_ID, reduction = "umap", group.by = "orig.ident", pt.size = 1, cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+
+P1
+```
+
+```{r fig.height =8, fig.width = 10, fig.align = "center"}
+P2 <- DimPlot(PTG_2M.integrated_ID, reduction = "umap", label = T, label.size = 4)
+P2
+```
+
+
+## Identify and export markers of ID'd clusters - create Top3 List for each cluster
+```{r fig.height = 20, fig.width = 40, fig.align = "center"}
+PTG_2M.integrated_ID.markers <- FindAllMarkers(PTG_2M.integrated_ID, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+PTG_2M.integrated_ID.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 3, wt = avg_log2FC) -> top3
+```
+
+## Generate Top3 Heatmap
+````{r fig.height = 20, fig.width = 40, fig.align = "center"}
+DoHeatmap(PTG_2M.integrated_ID, features = top3$gene, size=8) + theme(text=element_text(size=25)) +  scale_fill_viridis(256, begin=0, end=1, option = "viridis", direction=1)
+```
+
+## Confirm that our estrus staging is correct
+```{r fig.height =8, fig.width = 12, fig.align = "center"}
+EstrousCycleGenes <- c("Star", "Rgcc", "Lhcgr", "Inhba")
+  
+  VlnPlot(PTG_2M.integrated_ID, features = EstrousCycleGenes, ncol = 2, pt.size = 0, assay = "RNA", split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+```
+
+
+# Build a stacked violin plot to illustrate cluster identification process
+## Reorder Clusters so that realted clusters are together
+```{r}
+PTG_2M.integrated_ID_ordered <- RenameIdents(object = PTG_2M.integrated, "11" = "RO-TBD", "4" = "Secretory RO1", "16" = "Secretory RO2", "9" = "CR", "18" = "Ciliated RO", "0" = "LGR5+", "5" = "Growing granulosa-late", "3" = "Granulosa", "15" = "Growing Granulosa-early", "2" = "Theca",   "7" = "Endothelial1", "10" = "Endothelial2", "8" = "Immune", "12" = "FibroB1", "14" = "FibroB2", "1" = "MyoFibroB", "13" = "SMCs", "17" = "Adipose",  "6" = "LowQual") 
+```
+
+## Select features to plot in the stacked violin -your cell type markers.
+It helps to order them so that the marker genes are in the same order as the clusters they belong to.
+```{r fig.height =8, fig.width = 10, fig.align = "center"}
+
+features<- c("Pax8", "Rmst", "Pax2", "Krt8", "Cdh1", "Gfra1", "Foxj1", "Lgr5", "Foxl2", "Fshr",  "Nr5a2","Esr2", "Amh", "Mki67", "Nr5a1", "Cyp17a1",  "Emcn","Pecam1", "Adgre1", "Ptprc",  "Col1a1",  "Acta2",  "Pdgfrb", "Cnn1", "Tagln", "Adipoq")
+```
+
+## Plot StackedViolin
+```{r fig.height =8, fig.width = 10, fig.align = "center"}
+a <- VlnPlot(PTG_2M.integrated_ID_ordered, features, stack = TRUE, flip = TRUE, assay="RNA") +
+        theme(legend.position = "none") + ggtitle("Marker Gene Expression")
+a
+```
+
+
+
+
+# Subset Pax8+ cells to obtain a RO only dataset
+***
+
+```{r}
+PTG_2M.integrated_PxPos <- subset(x = PTG_2M.integrated, subset = Pax8 > 1)
+```
+
+# Perform standard Seurat pre-processing pipeline on merged data
+
+<br>
+
+## Identify highly variable features  
+
+```{r}
+PTG_2M.integrated_PxPos <- FindVariableFeatures(PTG_2M.integrated_PxPos, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(PTG_2M.integrated_PxPos), 10)
+top10
+VFplot1 <- VariableFeaturePlot(PTG_2M.integrated_PxPos)
+VFplot2 <- LabelPoints(plot = VFplot1, points = top10, repel = TRUE)
+VFplot2
+```
+
+<br>
+
+## Scale the data 
+```{r}
+PTG_2M.integrated_PxPos <- ScaleData(PTG_2M.integrated_PxPos, features = rownames(PTG_2M.integrated_PxPos))
+```
+<br>
+
+## Perform linear dimensional reduction (PCA)
+```{r}
+PTG_2M.integrated_PxPos <- RunPCA(PTG_2M.integrated_PxPos, features = VariableFeatures(object = PTG_2M.integrated_PxPos))
+```
+
+<br>
+
+## Determine dimensionality of the data
+### View sigificance of PCs with the Jackstraw method
+```{r}
+PTG_2M.integrated_PxPos <- JackStraw(object = PTG_2M.integrated_PxPos, reduction = "pca", dims = 50, num.replicate = 100,  prop.freq = 0.1, verbose = FALSE)
+PTG_2M.integrated_PxPos <- ScoreJackStraw(object = PTG_2M.integrated_PxPos, dims = 1:50, reduction = "pca")
+JackStrawPlot(object = PTG_2M.integrated_PxPos, dims = 1:50, reduction = "pca")
+```
+
+### View standard deviation of the PCs with Elbow Plot
+```{r}
+ElbowPlot(PTG_2M.integrated_PxPos, ndims = 80)
+```
+
+At this point, choose the number of PCs to use for further analysis, rule of thumb is to only use significant PCs from Jackstraw, and this will usually be around where the inflection point is in the Elbow Plot.
+*<span style="color: green;">Here we choose to run the analysis with 45 PCs, remember to change number of dims during clustering </span>*
+
+## Cluster the cells
+```{r}
+PTG_2M.integrated_PxPos <- FindNeighbors(PTG_2M.integrated_PxPos, dims = 1:13)
+PTG_2M.integrated_PxPos <- FindClusters(PTG_2M.integrated_PxPos, resolution = 0.8)
+```
+
+## Run non-linear domensional reduction: UMAP
+*<span style="color: green;">Remember to change number of dims </span>*
+```{r}
+PTG_2M.integrated_PxPos <- RunUMAP(PTG_2M.integrated_PxPos, dims = 1:13)
+DimPlot(PTG_2M.integrated_PxPos, reduction = "umap", label = T, label.size = 3)
+```
+
+```{r fig.height = 5.5, fig.width = 15, fig.align = "center"}
+P1 <- DimPlot(PTG_2M.integrated_PxPos, reduction = "umap", group.by = "orig.ident")
+P2 <- DimPlot(PTG_2M.integrated_PxPos, reduction = "umap", label = T, label.size = 3)
+P1 + P2
+
+```
+
+```{r}
+P1
+```
+
+```{r}
+P2
+```
+
+```{r fig.height = 5.5, fig.width = 20, fig.align = "center"}
+P3 <- DimPlot(PTG_2M.integrated_PxPos, reduction = "umap", label = T, split.by = "orig.ident", label.size = 3)
+P3
+```
+
+### Evaluate QC metrics on clustered cells
+#### UMAP
+```{r fig.height = 5.5, fig.width = 15, fig.align = "center"}
+FeaturePlot(PTG_2M.integrated_PxPos, features = c("nFeature_RNA", "percent.mt"))
+```
+
+#### Violin Plot
+```{r fig.height = 5.5, fig.width = 15, fig.align = "center"}
+VlnPlot(PTG_2M.integrated_PxPos, features = c("nFeature_RNA", "percent.mt"), ncol = 2, pt.size = 0.2)
+```
+
+## Save Seurat object
+```{r}
+saveRDS(PTG_2M.integrated_PxPos, file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_PxPos.rds")
+```
+
+## [START HERE IF ANALYSIS IS ALREADY DONE AND YOU'RE JUST EXPLORING THE DATASET]
+## Load Seurat object
+```{r}
+PTG_2M.integrated_PxPos <- readRDS(file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_PxPos.rds")
+```
+
+## Generate FeaturePlot + ViolinPlot layouts for individual genes
+*<span style="color: green;">Enter the name of the gene you'd like to visualize below </span>*
+```{r LayoutPxPos, fig.height = 8, fig.width = 9, fig.align = "center"}
+gene <- "Pax2"
+
+F1 <- FeaturePlot(PTG_2M.integrated_PxPos, features = c(gene), reduction = 'umap', pt.size = 3, cols = c("grey", "red"), label.size = 5, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+V1 <- VlnPlot(PTG_2M.integrated_PxPos, features = c(gene), assay = "RNA", split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+P_RO <- F1 + V1
+P_RO
+```
+
+```{r fig.height =15, fig.width = 25, fig.align = "center"}
+VlnPlot(PTG_2M.integrated_PxPos, features = c("Pax8", "Nr5a2", "Lgr5", "Gfra1", "Runx1", "Fshr", "Pgr", "Amh", "Pax2", "Rmst", "Foxj1", "Arl13b", "Cyp17a1", "Emcn", "Adgre1", "Acta2"), assay = "RNA", split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+```
+
+```{r fig.height =15, fig.width = 25, fig.align = "center"}
+VlnPlot(PTG_2M.integrated_PxPos, features = c("Pax8", "Nr5a2", "Lgr5", "Gfra1", "Runx1", "Fshr", "Pgr", "Krt8", "Pax2", "Rmst", "Foxj1", "Arl13b", "Krt19", "Nr0b1", "Emcn", "Acta2"), assay = "RNA")
+```
+
+```{r}
+PTG_2M.integrated_PxPos.markers <- FindAllMarkers(PTG_2M.integrated_PxPos)
+```
+
+```{r}
+write.csv(PTG_2M.integrated_PxPos.markers, file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_PxPos.csv")
+```
+
+```{r}
+PTG_2M.integrated_PxPosID <- RenameIdents(object = PTG_2M.integrated_PxPos, "0" = "Secretory RO", "1" = "Ciliated Gfra1+", "2" = "RO-TBD", "3" = "IOR", "4" = "Lgr5+", "5" = "Ciliated Pgr+", "6" = "Pgr+ Epith?", "7"="LowQual") 
+```
+
+## Save Seurat object
+```{r}
+saveRDS(PTG_2M.integrated_PxPosID, file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_PxPosID.rds")
+```
+
+## [START HERE IF ANALYSIS IS ALREADY DONE AND YOU'RE JUST EXPLORING THE DATASET]
+## Load Seurat object
+```{r}
+PTG_2M.integrated_PxPosID <- readRDS(file = "/Users/Jen/Documents/PTG_2M_snRNAseq/PTG_2M.integrated_PxPosID.rds")
+```
+
+# Build a stacked violin plot to illustrate cluster identification process
+## Reorder Clusters so that realted clusters are together
+```{r}
+PTG_2M.integrated_PxPosID_ordered <- RenameIdents(object = PTG_2M.integrated_PxPos, "0" = "Secretory RO","4" = "Lgr5+", "1" = "Ciliated Gfra1+", "5" = "Ciliated Pgr+", "6" = "Pgr+ Epith", "3" = "IOR", "2" = "RO-TBD", "7"="LowQual" ) 
+```
+
+## Select features to plot in the stacked violin -your cell type markers.
+It helps to order them so that the marker genes are in the same order as the clusters they belong to.
+```{r fig.height =8, fig.width = 10, fig.align = "center"}
+
+featuresPxPos <- c("Pax8", "Rmst", "Pax2", "Lgr5", "Gfra1", "Foxj1", "Dnah3", "Pgr", "Krt8", "Krt19", "Cdh1", "Esr2", "Nr5a2")
+```
+
+## Plot StackedViolin
+```{r fig.height =6, fig.width = 4, fig.align = "center"}
+a <- VlnPlot(PTG_2M.integrated_PxPosID_ordered, featuresPxPos, stack = TRUE, flip = TRUE, assay="RNA") +
+        theme(legend.position = "none") + ggtitle("Marker Gene Expression")
+a
+```
+
+
+```{r fig.height =15, fig.width = 25, fig.align = "center"}
+VlnPlot(PTG_2M.integrated_PxPosID, features = c("Pax8", "Nr5a2", "Lgr5", "Gfra1", "Runx1", "Fshr", "Pgr", "Krt8", "Pax2", "Rmst", "Foxj1", "Arl13b", "Krt19", "Nr0b1", "Emcn", "Acta2"), assay = "RNA")
+```
+
+```{r fig.height =5, fig.width = 15, fig.align = "center"}
+P1 <- DimPlot(PTG_2M.integrated_PxPosID, reduction = "umap", group.by = "orig.ident")
+P2 <- DimPlot(PTG_2M.integrated_PxPosID, reduction = "umap", label = T, label.size = 3)
+P1 + P2
+```
+
+```{r fig.height =10, fig.width = 10, fig.align = "center"}
+PTG_2M.integrated_PxPos.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 5, wt = avg_log2FC) -> top5
+
+DoHeatmap(PTG_2M.integrated_PxPosID, features = top5$gene) + scale_fill_viridis(256, begin=0, end=1, option = "viridis", direction=1)
+```
+
+
+# Layout generators
+## Generate FeaturePlot + ViolinPlot layouts for individual genes
+*<span style="color: green;">Enter the name of the gene you'd like to visualize below </span>*
+```{r Gene layout PxPos, fig.height = 20, fig.width = 10, fig.align = "center"}
+gene <- "Rmst"
+
+#Generate PxPos Layout
+FA1 <- FeaturePlot(PTG_2M.integrated_ID, features = c(gene), reduction = 'umap', pt.size = 3, cols = c("grey", "red"), label.size = 2, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+VA1 <- VlnPlot(PTG_2M.integrated_ID, features = c(gene), assay = "RNA", split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+
+P_All <- FA1 + VA1
+
+#Generate AllClusters layout
+FP1 <- FeaturePlot(PTG_2M.integrated_PxPosID, features = c(gene), reduction = 'umap', pt.size = 3, cols = c("grey", "red"), label.size = 5, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+VP1 <- VlnPlot(PTG_2M.integrated_PxPosID, features = c(gene), assay = "RNA", split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F"))
+P_RO <- FP1 + VP1
+
+#Plot both on a single layout
+P_RO + P_All
+```
+### SessionInfo
+```{r}
+sessionInfo()
+```
+

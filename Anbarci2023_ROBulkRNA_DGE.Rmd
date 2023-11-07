@@ -1,0 +1,175 @@
+---
+title: "Salmon_QC on RO"
+output: 
+  html_document:
+    keep-md: yes
+date: "2023-09-05"
+---
+
+# Knitr Setup
+```{r setup-chunk, include=FALSE}
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = FALSE,
+                      cache = TRUE)
+```
+
+
+# Load required libraries
+```{r}
+library(tximport)
+library(EnsDb.Mmusculus.v79)
+library(DESeq2)
+library(RNAseqQC)
+library(ggplot2)
+library(apeglm)
+library(pheatmap)
+library(RColorBrewer)
+library(AnnotationHub)
+```
+
+
+#Load expression data - output from Salmon
+```{r}
+#MAKE SURE TO REPLACE THE PATH BELOW WITH THE CORRECT FILE LOCATION ON YOUR SYSTEM
+dir <- "PATH/TO/RO BulkRNAseq/Salmon/"
+samples <- read.table(file.path(dir,"samplesRO.txt"), header=TRUE)
+head(samples)
+files <- file.path(dir,samples$Sample, "quant.sf")
+names(files) <- samples$Condition
+```
+
+```{r}
+file.exists(files)
+head(files)
+```
+# Convert transcripts to genes in expression dataframe
+```{r}
+edb <- EnsDb.Mmusculus.v79
+tx2gene <- ensembldb::transcripts(edb, return.type="DataFrame")
+k <- keys(edb, keytype = "GENEID")
+df <- select(edb, keys = k, keytype = "GENEID", columns = "TXNAME")
+tx2gene <- df[, 2:1]
+txi <- tximport(files, type="salmon", tx2gene=tx2gene, ignoreTxVersion=TRUE)
+```
+
+# Perform differential gene expression analysis
+```{r}
+ddsTxi <- DESeqDataSetFromTximport(txi,
+                                   colData = samples,
+                                   design = ~ Condition)
+```
+
+## RNAseq QC 
+### Pre-filter transcripts with >= 50 reads
+```{r}
+keep <- rowSums(counts(ddsTxi)) >= 50
+ddsTxi <- ddsTxi[keep,]
+```
+
+### Plot total counts per sample
+```{r TotalCountsPlot-RO, dev = c("png", "tiff")}
+plot_total_counts(ddsTxi)
+```
+
+### BoxPlot of normalized counts for each sample
+```{r NormalizedCountsBoxPlot-RO, dev = c("png", "tiff")}
+ddsTxi <- estimateSizeFactors(ddsTxi)
+boxplot(log10(counts(ddsTxi,normalized=TRUE)+1))
+```
+## Variance-stabilizing transformation
+```{r}
+vsd <- vst(ddsTxi)
+class(vsd)
+```
+
+```{r}
+assay(vsd)[1:3,1:6]
+```
+
+## Principal components plot
+```{r PCA-Plot-RO, dev = c("png", "tiff")}
+pcaData <- plotPCA(vsd, intgroup = c( "Condition", "Sample"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(x = PC1, y = PC2, color = Condition)) +
+geom_point(size =3) +
+xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+coord_fixed() +
+scale_colour_manual(values = c("#d11382", "#3fb0bf")) + 
+theme_light()
+```
+
+## Heatmap of the sample-to-sample distances
+```{r Heatmap-RO, dev = c("png", "tiff")}
+
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$Condition, vsd$Sample, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "YlGnBu")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+```
+
+## Run Differential Gene Expression Analysis - fetal vs. adult RO
+```{r}
+dds <- DESeq(ddsTxi)
+resRO_fRO <- results(dds, contrast=c("Condition","Adult_RO","Fetal_RO"))
+```
+### Sort results by the smallest p value
+```{r}
+resRO_fROOrdered <- resRO_fRO [order(resRO_fRO$pvalue),]
+
+```
+
+### Summarize results
+```{r}
+summary(resRO_fROOrdered)
+
+```
+
+```{r}
+resultsNames(dds)
+```
+
+
+### MA_Plot of results with apeglm LFC shrinkage
+```{r MA_Plot-RO, dev = c("png", "tiff")}
+resRO_fRO <- lfcShrink(dds, coef="Condition_Fetal_RO_vs_Adult_RO", type="apeglm")
+plotMA(resRO_fRO, ylim=c(-5,5), colSig = "#d11382", main="Fetal RO vs. Adult RO" ) + theme_light()
+```
+
+# Prepare data for export
+## Use AnnotationHub to add info to the results
+```{r}
+ah <- AnnotationHub()
+query(ah, c("OrgDb","Mus musculus"))
+```
+
+### Query AnnotationHub to find Mus musculus entry
+```{r}
+query(ah, c("OrgDb","Mus musculus"))
+```
+
+### Pull the Mus musculus record
+```{r}
+Mm <- ah[["AH95960"]]
+```
+
+
+## Add gene symbols to the results table and export as .csv
+```{r}
+resRO_fROOrdered$symbol <- mapIds(Mm, rownames(resRO_fROOrdered), column="SYMBOL", keytype="ENSEMBL")
+head(resRO_fROOrdered)
+write.csv(as.data.frame(resRO_fROOrdered),
+	file="RO_fRO_Sigresults.csv")
+```
+
+### SessionInfo
+```{r}
+sessionInfo()
+```
+

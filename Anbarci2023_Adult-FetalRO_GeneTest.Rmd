@@ -1,0 +1,156 @@
+# Set Gene of interest
+
+```{r}
+GENE <- c("Pgr")
+```
+
+---
+title: "RO Datasets - `r GENE ` Expression"
+author: Anbarci et al, 2023
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+    toc_float:
+      toc_collapsed: yes
+    number_sections: yes
+    theme: lumen
+    code_folding: show
+    fig_width: 10
+    fig_height: 8
+---
+
+# Load required libraries
+
+```{r echo=FALSE}
+library(Seurat)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(ggplot2)
+library(stringr)
+library(RColorBrewer)
+```
+
+# Load RNAseq datasets
+
+## Introduction to the datasets
+
+-   BulkRNA: GFP+ cells from E16.5 and 2-month-old *Pax8rtTA; Tre-H2B-Gfp* mice were isolated by FACs and process for bulk RNA seqeuncing. The GFP signal was used to visualize the rete ovarii and perform fine dissection to retain as much of it as possible in the single cell suspension. Fetal ovary; Adult Ovary; Adult OSE and Adult Oviduct datasets were previously published and were reanalyzed alongside our RO samples. These allow for comparison of gene expression in the RO with other female reproductive epithelia.
+
+-   [Fetal_scRNA]{.underline}: Single cell suspension of the ovarian capsule from E16.5 *Pax8rtTA; Tre-H2B-Gfp* mouse embryos. The GFP signal was used to visualize the rete ovarii and perform fine dissection to retain as much of it as possible in the single cell suspension.
+
+-   [Fetal_scRNA_PxPos]{.underline}: The same sequencing dataset as Fetal-scRNA, but the cells were subsetted based on Pax8 expression (Pax8\>0). Pax8 is enriched in the rete ovarii and mesonephric tubules, thus this dataset allows for better investigation of gene expression in the subregions of the **fetal** rete ovarii.
+
+-   [Adult_snRNA]{.underline}: Single nuclei suspension of the rete ovarii and surrounding tissue from 2-month-old *Pax8rtTA; Tre-H2B-Gfp* mice **at estrus and diestrus**. The GFP signal was used to visualize the rete ovarii and perform fine dissection to retain as much of it as possible in the single nuclei suspension. Cells were FAC-sorted by NucRed and GFP expression and the final nuclei suspension submittred for 10x Chromium capture was composed of 50% NucRed/GFP+ cells (rete ovarii) and 50% NucRed/GFP- cells (surrounding tissue).
+
+-   [Adult_snRNA_PxPos]{.underline}: The same sequencing dataset as Adult-snRNA, but the cells were subsetted based on Pax8 expression (Pax8\>0). Pax8 is enriched in the rete ovarii, thus this dataset allows for better investigation of gene expression in the subregions of the **adult** rete ovarii.
+
+## Load .RDS objects
+
+[*Replace **dir** with the path to the folder containing the .rds files on your computer*]{style="color: green"}
+
+```{r}
+#MAKE SURE TO REPLACE THE DIR PATH BELOW WITH THE CORRECT FILE LOCATION ON YOUR SYSTEM
+setwd(dir = "PATH/TO/PTG-RDS/")
+BulkRNA <- readRDS("ReproEpith_BulkRNA_AvgExpr.RDS")
+Fetal_scRNA <- readRDS("Fetal_scRNA.rds")
+Fetal_scRNA_PxPos <- readRDS("Fetal_scRNA_PxPos.rds")
+Adult_snRNA <- readRDS("Adult_snRNA.rds")
+Adult_snRNA_PxPos <- readRDS("Adult_snRNA_PxPos.rds")
+```
+
+# Gene expression test
+
+## Bar Plot of Bulk RNAseq
+
+```{r echo = FALSE, BulkPlot, dev = c("png", "tiff"), fig.height = 8, fig.width = 10, fig.align = "center"}
+gene_data <- subset(BulkRNA, Gene.Symbol == GENE)
+ggplot(data = gene_data, aes(x = Tissue, y = Avg_Expression, fill = Tissue)) +
+  geom_bar(stat = "identity") +
+  labs(x = "", y = "Average Expression (TPM)", ) +
+  ggtitle(paste(GENE)) +
+  scale_fill_manual(values = c("Fetal_RO" = "#3EB1C0", "Adult_RO" = "#D21282", "Fetal_Ovary" = "#2ECC71", "Adult_Ovary" = "#F4D03F", "Adult_OSE" = "#BF4B04", "Adult_Oviduct" = "#8F44AE")) +
+  theme_minimal() +
+  theme_bw() +
+  theme(axis.text = element_text(size = 15)) +
+          theme(axis.title.y  = element_text(size = 15))
+```
+
+## Violin + FeaturePlot layouts
+
+### Fetal scRNA
+
+```{r echo = FALSE, FetalLayout, dev = c("png", "tiff"), fig.height = 8, fig.width = 10, fig.align = "center"}
+FA1 <- FeaturePlot(Fetal_scRNA, features = c(GENE), reduction = 'umap', pt.size = 2, cols = c("grey", "red"), label.size = 3, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+VA1 <- VlnPlot(Fetal_scRNA, features = c(GENE), assay = "RNA", pt.size=0)
+
+FP1 <- FeaturePlot(Fetal_scRNA_PxPos, features = c(GENE), reduction = 'umap', pt.size = 2, cols = c("grey", "red"), label.size = 3, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+VP1 <- VlnPlot(Fetal_scRNA_PxPos, features = c(GENE), assay = "RNA", pt.size=0)
+
+P_All <- FA1 + VA1
+P_Pos <- FP1 + VP1
+P_All
+P_Pos
+
+```
+
+### Adult snRNA
+
+```{r echo = FALSE, AdultLayout, fig.height = 15, fig.width = 10, fig.align = "center"}
+FA2 <- FeaturePlot(Adult_snRNA, features = c(GENE), reduction = 'umap', pt.size = 2, cols = c("grey", "red"), label.size = 4, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+VA2 <- VlnPlot(Adult_snRNA, features = c(GENE), assay = "RNA", pt.size=0) 
+VA3 <- VlnPlot(Adult_snRNA, features = c(GENE), assay = "RNA", pt.size=0, split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F")) 
+
+FP2 <- FeaturePlot(Adult_snRNA_PxPos, features = c(GENE), reduction = 'umap', pt.size = 2, cols = c("grey", "red"), label.size = 4, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+VP2 <- VlnPlot(Adult_snRNA_PxPos, features = c(GENE), assay = "RNA", pt.size=0) 
+VP3 <- VlnPlot(Adult_snRNA_PxPos, features = c(GENE), assay = "RNA", pt.size=0, split.by = "orig.ident", cols = c("PTG_2M_Diestrus" = "#d11382", "PTG_2M_Estrus" = "#F4D03F")) 
+
+
+P_All2 <- FA2 + VA2 + VA3
+P_Pos2 <- FP2 + VP2 + VP3
+P_All2
+P_Pos2
+```
+
+# [OPTIONAL] Generate UMAPs for each dataset for reference
+
+## Fetal scRNA
+
+```{r echo = FALSE, Fetal_Umaps, fig.height = 8, fig.width = 10, fig.align = "center"}
+
+DimPlot(Fetal_scRNA, reduction = "umap", pt.size = 1, label.size = 4, label = T) 
+
+```
+
+## Fetal scRNA - PxPos
+
+```{r echo = FALSE, Fetal_Umap_PxPos, fig.height = 6, fig.width = 10, fig.align = "center"}
+
+DimPlot(Fetal_scRNA_PxPos, reduction = "umap", pt.size = 2, label.size = 4, label = T) 
+```
+
+## Adult snRNA
+
+```{r echo = FALSE, Adult_Umaps, fig.height = 8, fig.width = 10, fig.align = "center"}
+
+AdultStages <- DimPlot(Adult_snRNA, reduction = "umap", pt.size = 1, label.size = 4, group.by = "orig.ident") 
+AdultClusters <- DimPlot(Adult_snRNA, reduction = "umap", pt.size = 1, label.size = 4, label = T) 
+AdultStages 
+AdultClusters
+```
+
+## Adult snRNA - PxPos
+
+```{r echo = FALSE, Adult_Umap_PxPos, fig.height = 6, fig.width = 10, fig.align = "center"}
+
+AdultStagesPxPos <- DimPlot(Adult_snRNA_PxPos, reduction = "umap", pt.size = 1, label.size = 4, group.by = "orig.ident") 
+AdultClustersPxPos <- DimPlot(Adult_snRNA_PxPos, reduction = "umap", pt.size = 1, label.size = 4, label = T) 
+AdultStagesPxPos 
+AdultClustersPxPos
+```
+
+### SessionInfo
+```{r}
+sessionInfo()
+```

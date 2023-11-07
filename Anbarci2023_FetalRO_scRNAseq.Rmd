@@ -1,0 +1,401 @@
+---
+title: "PTG_E16_scRNAseq - Full pipeline"
+author: Jennifer McKey
+date: October 04, 2020
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+    code_folding: show
+    df_print: paged
+---
+
+Load required libraries
+===
+```{r}
+library(Seurat)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+library(stringr)
+library(RColorBrewer)
+library(viridis)
+```
+
+Set up Seurat object
+===
+```{r}
+#MAKE SURE TO REPLACE THE PATH WITH THE CORRECT FILE LOCATION ON YOUR SYSTEM
+data_dir <- 'PATH/TO/PTG_E16_scRNAseq/filtered_feature_bc_matrix/'
+list.files(data_dir) 
+data <- Read10X(data.dir = data_dir)
+Fetal_RO <- CreateSeuratObject(counts = data, project = "FetalRO", min.cells = 3, min.features = 200)
+```
+
+Visualize QC metrics
+===
+```{r FetalRO_QCsct, dev = c("png", "tiff"), fig.height = 6, fig.width = 10,}
+col <- "#3fb0bf"
+Fetal_RO[["percent.mt"]] <- PercentageFeatureSet(Fetal_RO, pattern = "^mt-")
+Fetal_RO_QCsct <- FeatureScatter(Fetal_RO, feature1 = "nFeature_RNA", feature2 = "percent.mt", cols = col)
+Fetal_RO_QCsct
+
+```
+
+```{r FetalRO_QCvln, dev = c("png", "tiff"), fig.height = 6, fig.width = 8,}
+Fetal_RO_QCvln <- VlnPlot(Fetal_RO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0.1, cols = col)
+Fetal_RO_QCvln
+
+```
+
+Filter out low quality cells (200 < nFeature < 7500; percent.mt > 10)
+===
+```{r FetalRO_QCvlnFiltered, dev = c("png", "tiff"), fig.height = 6, fig.width = 8,}
+Fetal_RO <- subset(Fetal_RO, subset = nFeature_RNA > 200 & nFeature_RNA < 7500 & percent.mt < 10)
+Fetal_RO_QCvlnFiltered <- VlnPlot(Fetal_RO, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0.1, cols = col)
+Fetal_RO_QCvlnFiltered
+```
+
+Normalize the data & identify highly variable features
+===
+```{r}
+Fetal_RO <- NormalizeData(Fetal_RO, normalization.method = "LogNormalize", scale.factor = 10000)
+Fetal_RO <- FindVariableFeatures(Fetal_RO, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(Fetal_RO), 10)
+top10
+VFplot1 <- VariableFeaturePlot(Fetal_RO)
+VFplot2 <- LabelPoints(plot = VFplot1, points = top10, repel = TRUE)
+VFplot2
+```
+
+
+Cell cycle scoring
+===
+- Make cell-cycle-stage-specific gene lists & convert to mouse symbols using stringr
+```{r}
+s.genes <- cc.genes$s.genes
+s.genes <- str_to_title(s.genes, locale = "en")
+g2m.genes <- cc.genes$g2m.genes
+g2m.genes <- str_to_title(g2m.genes, locale = "en")
+```
+
+- Assign & visualize cell cycle scores
+```{r}
+Fetal_RO <- CellCycleScoring(Fetal_RO, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+RidgePlot(Fetal_RO, features = c("Pcna", "Top2a", "Mcm6", "Mki67"), ncol = 2)
+
+```
+
+Scale the data with cell cycle regression
+===
+```{r}
+Fetal_RO <- ScaleData(Fetal_RO, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(PTG_1001))
+```
+
+Perform linear dimensional reduction (PCA)
+===
+```{r}
+Fetal_RO <- RunPCA(Fetal_RO, features = VariableFeatures(object = Fetal_RO))
+```
+
+Examine PCA data
+===
+- Preview significant features per PC
+```{r}
+print(Fetal_RO[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+- View scatter plot for PC_1 vs PC_2
+```{r FetalRO_QCvlnFiltered, dev = c("png", "tiff"), fig.height = 6, fig.width = 8,}
+	DimPlot(Fetal_RO, reduction = "pca", cols=col)
+```
+
+- Heatmaps for the first 15 PCs
+```{r FetalRO_QCvlnFiltered, dev = c("png", "tiff"), fig.height = 6, fig.width = 8,}
+DimHeatmap(Fetal_RO, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
+Determine dimensionality of the data 
+===
+- View significance of PCs with the Jackstraw method
+```{r}
+Fetal_RO <- JackStraw(object = Fetal_RO, reduction = "pca", dims = 50, num.replicate = 100,  prop.freq = 0.1, verbose = FALSE)
+Fetal_RO <- ScoreJackStraw(object = Fetal_RO, dims = 1:50, reduction = "pca")
+JackStrawPlot(object = Fetal_RO, dims = 1:50, reduction = "pca")
+```
+
+- View standard deviation of the PCs with Elbow Plot
+```{r}
+ElbowPlot(Fetal_RO, ndims = 50)
+```
+
+At this point, choose the number of PCs to use for further analysis, rule of thumb is to only use sigificant PCs from Jackstraw, and this will usually be around where the inflection point is in the Elbow Plot.
+Here we choose to use 42 PCs
+
+Cluster the cells
+===
+```{r}
+Fetal_RO <- FindNeighbors(Fetal_RO, dims = 1:42)
+Fetal_RO <- FindClusters(Fetal_RO, resolution = 0.8)
+```
+
+Run non-linear dimensional reduction
+===
+-tSNE
+```{r}
+Fetal_RO <- RunTSNE(Fetal_RO, dims.use = 1:42, do.fast = T)
+TSNEPlot(Fetal_RO, label = T)
+```
+
+-UMAP
+```{r}
+Fetal_RO <- RunUMAP(Fetal_RO, dims = 1:42)
+DimPlot(Fetal_RO, reduction = "umap")
+```
+
+Evaluate QC metrics on clustered cells
+===
+-UMAP
+```{r}
+FeaturePlot(Fetal_RO, features = c("nFeature_RNA", "percent.mt"))
+```
+
+-Violin Plot
+```{r}
+VlnPlot(Fetal_RO, features = c("nFeature_RNA", "percent.mt"), ncol = 2, pt.size = 0.2)
+```
+
+Filter out low quality clusters #9 and #13 (low gene and mito gene counts) and rerun dimensional reduction
+===
+```{r}
+cells_to_remove <- WhichCells(Fetal_RO, idents = c(9, 13))
+Fetal_RO <- subset(Fetal_RO, cells = setdiff(Cells(Fetal_RO), cells_to_remove))
+Fetal_RO <- FindVariableFeatures(Fetal_RO, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(Fetal_RO)
+Fetal_RO <- ScaleData(Fetal_RO, features = all.genes)
+Fetal_RO <- RunPCA(Fetal_RO, features = VariableFeatures(object = Fetal_RO))
+ElbowPlot(Fetal_RO, ndims = 50)
+```
+
+```{r}
+Fetal_RO <- FindNeighbors(Fetal_RO, dims = 1:42)
+Fetal_RO <- FindClusters(Fetal_RO, resolution = 0.8)
+Fetal_RO <- RunTSNE(Fetal_RO, dims.use = 1:42, do.fast = T)
+TSNEPlot(Fetal_RO, label = T)
+```
+
+```{r}
+Fetal_RO <- RunUMAP(Fetal_RO, dims = 1:42)
+DimPlot(Fetal_RO, reduction = "umap", label = T, label.size = 3)
+```
+
+Save Seurat object
+===
+```{r}
+saveRDS(Fetal_RO, file = "PTG_E16_scRNAseq/Fetal_RO.RDS")
+```
+
+#[START HERE IF YOU"VE ALREADY PERFORMED THE ANALYSIS AND JUST WANT TO EXPLORE THE DATA]
+Load Seurat object
+===
+```{r}
+Fetal_RO <- readRDS( file = "PTG_E16_scRNAseq/Fetal_RO.RDS")
+```
+
+```{r PTGE16_UMAP, fig.height = 5, fig.width = 6, fig.align = "center"}
+Fetal_RO <- RunUMAP(Fetal_RO, dims = 1:42)
+DimPlot(Fetal_RO, reduction = "umap", label = T, label.size = 5) & theme(text=element_text(size=20)) + NoLegend()
+```
+
+
+
+
+Identify Pax8+ clusters (putative RO)
+===
+
+Using ggmin minimalist theme 
+#devtools::install_github('sjessa/ggmin')
+```{r PTGE16_FPPax8, fig.height = 5, fig.width = 6, fig.align = "center"}
+FP_Pax8 <- FeaturePlot(Fetal_RO, features = c("Pax8"), reduction = 'umap', pt.size = 0.7, cols = c("grey", "red"), label.size = 3) & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" ))
+FP_Pax8 & ggmin::theme_min() + theme(text=element_text(size=20))
+```
+
+```{r PTGE16_VP_Pax8, fig.height = 6, fig.width = 10, fig.align = "center"}
+VlnPlot(Fetal_RO, features = c("Pax8"),  pt.size = 0.2)
+```
+
+Identify marker genes for each cluster and export csv
+===
+```{r}
+Fetal_RO_cc.markers <- FindAllMarkers(Fetal_RO, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(Fetal_RO_cc.markers, "PTG_E16_scRNAseq/Fetal_RO_Markers.csv")
+```
+
+Save Seurat object
+===
+```{r}
+saveRDS(Fetal_RO, file = "PTG_E16_scRNAseq/Fetal_RO.RDS")
+```
+
+Run pipeline on Pax8+ cells only
+===
+- Subset Pax8+ cells
+```{r}
+Fetal_RO_PxPos <- subset(Fetal_RO, subset = Pax8>0)
+```
+
+- Run standard Seurat pipeline on subset
+```{r}
+Fetal_RO_PxPos <- NormalizeData(Fetal_RO_PxPos, normalization.method = "LogNormalize", scale.factor = 10000)
+Fetal_RO_PxPos <- FindVariableFeatures(Fetal_RO_PxPos, selection.method = "vst", nfeatures = 2000)
+top10_PxPos <- head(VariableFeatures(Fetal_RO_PxPos), 10)
+top10_PxPos
+```
+
+```{r}
+all.genes_PxPos <- rownames(Fetal_RO_PxPos)
+Fetal_RO_PxPos <- ScaleData(Fetal_RO_PxPos, features = all.genes_PxPos)
+Fetal_RO_PxPos <- RunPCA(Fetal_RO_PxPos, features = VariableFeatures(object = Fetal_RO_PxPos))
+Fetal_RO_PxPos <- JackStraw(object = Fetal_RO_PxPos, reduction = "pca", dims = 50, num.replicate = 100,  prop.freq = 0.1, verbose = FALSE)
+Fetal_RO_PxPos <- ScoreJackStraw(object = Fetal_RO_PxPos, dims = 1:50, reduction = "pca")
+JackStrawPlot(object = Fetal_RO_PxPos, dims = 1:50, reduction = "pca")
+```
+
+```{r}
+ElbowPlot(Fetal_RO_PxPos, ndims = 50)
+```
+
+```{r}
+Fetal_RO_PxPos <- FindNeighbors(Fetal_RO_PxPos, dims = 1:9)
+Fetal_RO_PxPos <- FindClusters(Fetal_RO_PxPos, resolution = 0.6)
+
+head(Idents(Fetal_RO_PxPos), 5)
+```
+
+```{r}
+Fetal_RO_PxPos <- RunTSNE(Fetal_RO_PxPos, dims.use = 1:9, do.fast = T)
+TSNEPlot(Fetal_RO_PxPos, label = T)
+```
+
+```{r PTGE16_PxPos_Umap, fig.height = 6, fig.width = 8, fig.align = "center"}
+Fetal_RO_PxPos <- RunUMAP(Fetal_RO_PxPos, dims = 1:9)
+DimPlot(Fetal_RO_PxPos, reduction = "umap", pt.size = 2, label.size = 3, label = T)
+```
+
+Save Seurat object
+===
+```{r}
+saveRDS(Fetal_RO_PxPos, file = "PTG_E16_scRNAseq/Fetal_RO_PxPos.RDS")
+```
+
+#[START HERE IF ANALYSIS IS ALREADY DOEN AND YOU JUST WANT TO EXPLORE THE DATA]
+
+Load Seurat object
+===
+```{r}
+Fetal_RO_PxPos <- readRDS(file = "PTG_E16_scRNAseq/Fetal_RO_PxPos.RDS")
+```
+
+
+```{r}
+Fetal_RO_PxPos.markers <- FindAllMarkers(Fetal_RO_PxPos, only.pos = T, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(Fetal_RO_PxPos.markers, "PTG_E16_scRNAseq/Fetal_RO_PxPos_Markers.csv")
+```
+Use top genes in the markers csv and prior knowledge to identify each cluster: 
+
+-- IOR should be Pax8+/Foxl2+/Gata4+/Nr5a1+/Runx1+
+-- CR should be Pax8+/Foxl2+/Gata4+/Gfra1+
+-- EOR should be Pax8+/Runx1+/Cdh1+/Spp1+
+-- Also check QC to see if any of the clusters are poor quality
+
+```{r PTGE16_VP_Pax8, fig.height = 6, fig.width = 10, fig.align = "center"}
+VlnPlot(Fetal_RO_PxPos, features = c("Pax8", "Foxl2", "Gata4", "Nr5a1", "Runx1", "Gfra1", "Cdh1", "Spp1", "nFeature_RNA"),  pt.size = 0)
+```
+- Cluster 0 = Pax8+ scatter
+- Cluster 1 = Mesonephric tubules
+- Cluster 2 = Connecting rete
+- Cluster 3 = Low quality
+- Cluster 4 = Intraovarian rete
+- Cluster 5 = Extraovarian rete
+
+Rename clusters based on cell type identifcation
+===
+```{r}
+Fetal_RO_PxPosID <- RenameIdents(object = Fetal_RO_PxPos, "0" = "Pax8+ scatter", "1" = "Meson tubules", "2" = "CR", "3" = "Low quality", "4" = "IOR", "5" = "EOR") 
+```
+
+```{r PTGE16_PxPos_Umap, fig.height = 4, fig.width = 5, fig.align = "center"}
+DimPlot(Fetal_RO_PxPosID, reduction = "umap", pt.size = 2, label.size = 5, label = T) + theme(legend.position = "top")
+```
+
+Save Seurat object
+===
+```{r}
+saveRDS(Fetal_RO_PxPosID, file = "PTG_E16_scRNAseq/Fetal_RO_PxPosID.RDS")
+```
+
+```{r}
+Fetal_RO_PxPosID <- readRDS(file = "PTG_E16_scRNAseq/Fetal_RO_PxPosID.RDS")
+```
+
+Build a stacked violin plot to illustrate cluster identification process
+===
+## Reorder Clusters so that related clusters are together
+```{r}
+Fetal_RO_PxPosID_ordered <- RenameIdents(object = Fetal_RO_PxPos,  "4" = "IOR", "2" = "CR",  "5" = "EOR", "1" = "Meson tubules", "0" = "Pax8+ scatter", "3" = "Low quality") 
+```
+
+## Select features to plot in the stacked violin -your cell type markers.
+It helps to order them so that the marker genes are in the same order as the clusters they belong to.
+```{r fig.height =8, fig.width = 10, fig.align = "center"}
+
+featuresFetalPxPos <- c("Pax8",  "Foxl2",  "Nr5a1",  "Gfra1", "Cdh1",  "Stx3", "Krt19" )
+```
+
+## Plot StackedViolin
+```{r fig.height =7, fig.width = 7, fig.align = "center"}
+a <- VlnPlot(Fetal_RO_PxPosID_ordered, featuresFetalPxPos, stack = TRUE, flip = TRUE, assay="RNA") +
+        theme(legend.position = "none") + ggtitle("Marker Gene Expression") +
+        theme(axis.title=element_text(size=20)) +
+        theme(axis.text=element_text(size=20))
+a
+```
+Find all markers with ID'd clusters
+===
+
+```{r}
+Fetal_RO_PxPosID.markers <- FindAllMarkers(Fetal_RO_PxPosID, only.pos = T, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(Fetal_RO_PxPosID.markers, "PTG_E16_scRNAseq/Fetal_RO_PxPosID_Markers.csv")
+```
+
+```{r fig.height =6, fig.width = 10, fig.align = "center"}
+Fetal_RO_PxPosID.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 3, wt = avg_log2FC) -> top3
+
+DoHeatmap(Fetal_RO_PxPosID, features = top3$gene, size = 4.2) + scale_fill_viridis(256, begin=0, end=1, option = "viridis", direction=1) + theme(axis.text = element_text(size=15)) 
+```
+
+
+Gene Test
+===
+```{r Gene layout PxPos, fig.height = 6, fig.width = 6, fig.align = "center"}
+gene <- "Epcam"
+
+#Generate PxPos Layout
+FA1 <- FeaturePlot(Fetal_RO_PxPosID, features = c(gene), reduction = 'umap', pt.size = 3, cols = c("grey", "red"), label.size = 2, label = T) + NoLegend() + NoAxes() + BoldTitle() & scale_colour_gradientn(colours = brewer.pal(5, "RdPu" )) 
+VA1 <- VlnPlot(Fetal_RO_PxPosID, features = c(gene), assay = "RNA")
+
+P_All <- FA1 + VA1
+P_All
+
+```
+
+### SessionInfo
+```{r}
+sessionInfo()
+```
